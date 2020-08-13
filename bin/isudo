@@ -1,0 +1,93 @@
+#!/usr/bin/python
+from __future__ import print_function
+import subprocess
+import re
+import os
+import readline
+from operator import itemgetter
+from collections import namedtuple
+try:
+    from shutil import which
+except ImportError:
+    from distutils.spawn import find_executable as which
+try:  # python2
+    raw_input
+    input = raw_input
+except NameError:
+    pass
+try:
+    from subprocess import DEVNULL
+except ImportError:
+    DEVNULL = open(os.devnull, 'wb')
+
+SUDO = which('sudo')
+NOPASSWD_ALL = re.compile(r'(?:\s*\()(\S*)(?:\)\s*NOPASSWD:\s*ALL\s*)')
+User = namedtuple('User', ('name', 'group'))
+
+
+def get_primary_group(user):
+    try:
+        return subprocess.check_output([which('id'), '-g', '-n', user], stderr=DEVNULL).decode().strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+users = sorted(
+    set(filter(  # no group => no such user, filter them out
+        lambda u: u.group is not None,
+        map(  # construct User namedtuples
+            lambda u: User(u.group(1), get_primary_group(u.group(1))),
+            filter(  # filter out None
+                None,
+                map(  # convert raw sudo -l lines to list of None (unmatched) and MatchObject
+                    lambda x: NOPASSWD_ALL.match(x),
+                    subprocess.check_output([SUDO, '-ln']).decode().splitlines()
+                )
+            )
+        )
+    )),
+    key=lambda u: u.name,
+)
+
+usernames = list(map(  # get only usernames
+    itemgetter(0),
+    users,
+))
+
+
+def readline_completer(text, state):
+    try:
+        return list(filter(lambda x: x.startswith(text), usernames + list(map(str, range(len(usernames))))))[state]
+    except IndexError:
+        return None
+
+
+readline.set_completer(readline_completer)
+readline.parse_and_bind('tab: complete')
+
+for i, u in enumerate(usernames):
+    print('{}: {}'.format(i, u))
+
+while True:
+    chosen = input('Choose the user: ')
+    try:
+        index = int(chosen)
+        try:
+            result = usernames[index]
+            break
+        except IndexError:
+            pass
+    except ValueError:
+        if chosen in usernames:
+            result = chosen
+            break
+
+    print('Bad choice, try again.')
+
+print("You've chosen {}".format(result))
+
+try:
+    subprocess.check_call([SUDO, '-inu', result, '--', '/bin/true'], stderr=DEVNULL, stdout=DEVNULL)
+    os.execl(SUDO, SUDO, '-inu', result)
+except subprocess.CalledProcessError:
+    os.execl(SUDO, SUDO, '-nu', result, '--', '/bin/bash')
